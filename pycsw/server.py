@@ -1232,8 +1232,20 @@ class Csw(object):
         if self.kvp['resulttype'] == 'validate':
             return self._write_acknowledgement()
 
-        if 'maxrecords' not in self.kvp:
-            self.kvp['maxrecords'] = int(self.config.get('server', 'maxrecords'))
+        maxrecords_cfg = -1  # not set in config server.maxrecords
+
+        if self.config.has_option('server', 'maxrecords'):
+            maxrecords_cfg = int(self.config.get('server', 'maxrecords'))
+
+        if 'maxrecords' not in self.kvp:  # not specified by client
+            if maxrecords_cfg > -1:  # specified in config
+                self.kvp['maxrecords'] = maxrecords_cfg
+            else:  # spec default
+                self.kvp['maxrecords'] = 10
+        else:  # specified by client
+            if maxrecords_cfg > -1:  # set in config
+                if int(self.kvp['maxrecords']) > maxrecords_cfg:
+                    self.kvp['maxrecords'] = maxrecords_cfg
 
         if any(x in ['bbox', 'q', 'time'] for x in self.kvp):
             LOGGER.debug('OpenSearch Geo/Time parameters detected.')
@@ -1356,6 +1368,7 @@ class Csw(object):
             self.kvp['hopcount'])
 
             from owslib.csw import CatalogueServiceWeb
+            from owslib.ows import ExceptionReport
             for fedcat in \
             self.config.get('server', 'federatedcatalogues').split(','):
                 LOGGER.debug('Performing distributed search on federated \
@@ -1377,11 +1390,15 @@ class Csw(object):
                             (remotecsw_matches, plural, fedcat)))
 
                             dsresults.append(remotecsw.records)
-
+                except ExceptionReport, err:
+                    error_string = 'remote CSW %s returned exception: ' % fedcat
+                    dsresults.append(etree.Comment(
+                    ' %s\n\n%s ' % (error_string, err)))
+                    LOGGER.debug(str(err))
                 except Exception, err:
                     error_string = 'remote CSW %s returned error: ' % fedcat
                     dsresults.append(etree.Comment(
-                    ' %s\n\n%s ' % (error_string, remotecsw.response)))
+                    ' %s\n\n%s ' % (error_string, err)))
                     LOGGER.debug(str(err))
 
         if int(matched) == 0:
@@ -1739,6 +1756,10 @@ class Csw(object):
     def harvest(self):
         ''' Handle Harvest request '''
 
+        service_identifier = None
+        old_identifier = None
+        deleted = []
+
         try:
             self._test_manager()
         except Exception, err:
@@ -1780,9 +1801,13 @@ class Csw(object):
             LOGGER.debug('checking if service exists (%s)' % content)
             results = self.repository.query_source(content)
 
-            if len(results) > 0:  # exists, don't insert
-                return self.exceptionreport('NoApplicableCode', 'source',
-                'Insert failed: service %s already in repository' % content)
+            if len(results) > 0:  # exists, keep identifier for update
+                LOGGER.debug('Service already exists, keeping identifier and results')
+                service_identifier = results[0].identifier
+                service_results = results
+                LOGGER.debug('Identifier is %s' % service_identifier)
+            #    return self.exceptionreport('NoApplicableCode', 'source',
+            #    'Insert failed: service %s already in repository' % content)
 
         # parse resource into record
         try:
@@ -1790,6 +1815,7 @@ class Csw(object):
             content, self.repository, self.kvp['resourcetype'],
             pagesize=self.csw_harvest_pagesize)
         except Exception, err:
+            LOGGER.exception(err)
             return self.exceptionreport('NoApplicableCode', 'source',
             'Harvest failed: record parsing failed: %s' % str(err))
 
@@ -1797,6 +1823,7 @@ class Csw(object):
         updated = 0
         ir = []
 
+        LOGGER.debug('Total Records parsed: %d' % len(records_parsed))
         for record in records_parsed:
             if self.kvp['resourcetype'] == 'urn:geoss:waf':
                 src = record.source
@@ -1818,12 +1845,26 @@ class Csw(object):
             title = getattr(record,
             self.context.md_core_model['mappings']['pycsw:Title'])
 
+            if record.type == 'service' and service_identifier is not None:  # service endpoint
+                LOGGER.debug('Replacing service identifier from %s to %s' % (record.identifier, service_identifier))
+                old_identifier = record.identifier
+                identifier = record.identifier = service_identifier
+            if (record.type != 'service' and service_identifier is not None
+                and old_identifier is not None):  # service resource
+                if record.identifier.find(old_identifier) != -1:
+                    new_identifier = record.identifier.replace(old_identifier, service_identifier)
+                    LOGGER.debug('Replacing service resource identifier from %s to %s' % (record.identifier, new_identifier))
+                    identifier = record.identifier = new_identifier
 
             ir.append({'identifier': identifier, 'title': title})
 
             # query repository to see if record already exists
             LOGGER.debug('checking if record exists (%s)' % identifier)
             results = self.repository.query_ids(ids=[identifier])
+
+            if len(results) == 0:  # check for service identifier
+                LOGGER.debug('checking if service id exists (%s)' % service_identifier)
+                results = self.repository.query_ids(ids=[service_identifier])
 
             LOGGER.debug(str(results))
 
@@ -1860,8 +1901,24 @@ class Csw(object):
         util.nspath_eval('csw:TransactionResponse',
         self.context.namespaces), version='2.0.2')
 
+        if service_identifier is not None:
+            fresh_records = [str(i['identifier']) for i in ir]
+            existing_records = [str(i.identifier) for i in service_results]
+
+            deleted = set(existing_records) - set(fresh_records)
+            LOGGER.debug('Records to delete: %s' % str(deleted))
+
+            for to_delete in deleted:
+                delete_constraint = {
+                    'type': 'filter',
+                    'values': [to_delete],
+                    'where': 'identifier = :pvalue0'
+                }
+                self.repository.delete(delete_constraint)
+
         node2.append(
-        self._write_transactionsummary(inserted=inserted, updated=updated))
+        self._write_transactionsummary(inserted=inserted, updated=updated,
+                                       deleted=len(deleted)))
 
         if inserted > 0:
             # show insert result identifiers
@@ -2009,14 +2066,8 @@ class Csw(object):
             request['requestid'] = tmp if tmp is not None else None
 
             tmp = doc.find('.').attrib.get('maxRecords')
-            request['maxrecords'] = tmp if tmp is not None else \
-            self.config.get('server', 'maxrecords')
-
-            client_mr = int(request['maxrecords'])
-            server_mr = int(self.config.get('server', 'maxrecords'))
-
-            if client_mr < server_mr:
-                request['maxrecords'] = client_mr
+            if tmp is not None:
+                request['maxrecords'] = tmp
 
             tmp = doc.find(util.nspath_eval('csw:DistributedSearch',
                   self.context.namespaces))
@@ -2323,7 +2374,7 @@ class Csw(object):
         else:  # it's XML
             self.contenttype = self.mimetype
             response = etree.tostring(self.response,
-            pretty_print=self.pretty_print)
+            pretty_print=self.pretty_print, encoding='unicode')
             xmldecl = '<?xml version="1.0" encoding="%s" standalone="no"?>\n' \
             % self.encoding
             appinfo = '<!-- pycsw %s -->\n' % self.context.version
@@ -2331,7 +2382,7 @@ class Csw(object):
         LOGGER.debug('Response:\n%s' % response)
 
         s = '%s%s%s' % (xmldecl, appinfo, response)
-        return s.encode()
+        return s.encode(self.encoding)
 
 
     def _gen_soap_wrapper(self):

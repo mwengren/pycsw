@@ -306,7 +306,7 @@ FOR EACH ROW EXECUTE PROCEDURE %(table)s_update_geometry();
         conn.execute(create_insert_update_trigger_sql)
         conn.execute(create_spatial_index_sql)
 
-def load_records(context, database, table, xml_dirpath, recursive=False):
+def load_records(context, database, table, xml_dirpath, recursive=False, force_update=False):
     """Load metadata records from directory of files to database"""
     repo = repository.Repository(database, context, table=table)
 
@@ -344,8 +344,13 @@ def load_records(context, database, table, xml_dirpath, recursive=False):
             try:
                 repo.insert(rec, 'local', util.get_today_and_now())
                 LOGGER.info('Inserted')
-            except Exception, err:
-                LOGGER.warn('ERROR: not inserted %s', err)
+            except RuntimeError, err:
+                if force_update:
+                    LOGGER.info('Record exists. Updating.')
+                    repo.update(rec)
+                    LOGGER.info('Updated')
+                else:
+                    LOGGER.warn('ERROR: not inserted %s', err)
 
 
 def export_records(context, database, table, xml_dirpath):
@@ -398,7 +403,7 @@ def refresh_harvested_records(context, database, table, url):
     repos = repository.Repository(database, context, table=table)
 
     # get all harvested records
-    count, records = repos.query(constraint={'where': 'source != "local"'})
+    count, records = repos.query(constraint={'where': 'mdsource != "local"', 'values': []})
 
     if int(count) > 0:
         LOGGER.info('Refreshing %s harvested records', count)
@@ -558,3 +563,12 @@ def validate_xml(xml, xsd):
         return 'Valid'
     except Exception, err:
         raise RuntimeError('ERROR: %s' % str(err))
+
+
+def delete_records(context, database, table):
+    """Deletes all records from repository"""
+
+    LOGGER.info('Deleting all records')
+    
+    repo = repository.Repository(database, context, table=table)
+    repo.delete(constraint={'where': '', 'values': []})

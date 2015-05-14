@@ -59,9 +59,12 @@ import sys
 app_path = os.path.dirname(__file__)
 sys.path.append(app_path)
 
+import newrelic.agent
+newrelic.agent.initialize('/apps/ckan/etc/ckan/default/newrelic_pycsw.ini')
+
 from pycsw import server
 
-
+@newrelic.agent.wsgi_application()
 def application(env, start_response):
     """WSGI wrapper"""
     config = 'default.cfg'
@@ -120,7 +123,7 @@ def application(env, start_response):
     status = '200 OK'
     start_response(status, headers.items())
 
-    return [contents]
+    return newrelic.agent.WSGIApplicationWrapper([contents])
 
 if __name__ == '__main__':  # run inline using WSGI reference implementation
     from wsgiref.simple_server import make_server

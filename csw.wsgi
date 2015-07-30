@@ -55,6 +55,8 @@
 from StringIO import StringIO
 import os
 import sys
+activate_this = os.path.join('/apps/ckan/usr/lib/ckan/pycsw/bin/activate_this.py')
+execfile(activate_this, {"__file__":activate_this})
 
 app_path = os.path.dirname(__file__)
 sys.path.append(app_path)
@@ -64,7 +66,7 @@ from pycsw import server
 
 def application(env, start_response):
     """WSGI wrapper"""
-    config = 'default.cfg'
+    config = '/apps/ckan/etc/ckan/default/pycsw.cfg'
 
     if 'PYCSW_CONFIG' in env:
         config = env['PYCSW_CONFIG']

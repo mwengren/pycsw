@@ -193,8 +193,8 @@ def setup_db(database, table, home, create_sfsql_tables=True, create_plpythonu_f
         Column('links', Text, index=True),
 
         #add custom indexes(NOAA):
-+       Index('ix_records_abstract', 'abstract', postgresql_using='hash'),
-+       Index('ix_records_keywords', 'keywords', postgresql_using='hash'),
+        Index('ix_records_abstract', 'abstract', postgresql_using='hash'),
+        Index('ix_records_keywords', 'keywords', postgresql_using='hash'),
     )
 
     # add extra columns that may have been passed via extra_columns

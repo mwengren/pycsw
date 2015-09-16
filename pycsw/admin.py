@@ -72,7 +72,7 @@ def setup_db(database, table, home, create_sfsql_tables=True, create_plpythonu_f
             LOGGER.info('PostGIS %s detected: Skipping SFSQL tables creation' % postgis_lib_version)
         except:
             pass
-    
+
     if create_sfsql_tables:
         LOGGER.info('Creating table spatial_ref_sys')
         srs = Table(
@@ -83,10 +83,10 @@ def setup_db(database, table, home, create_sfsql_tables=True, create_plpythonu_f
             Column('srtext', Text)
         )
         srs.create()
-    
+
         i = srs.insert()
         i.execute(srid=4326, auth_name='EPSG', auth_srid=4326, srtext='GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],UNIT["degree",0.01745329251994328,AUTHORITY["EPSG","9122"]],AUTHORITY["EPSG","4326"]]')
-    
+
         LOGGER.info('Creating table geometry_columns')
         geom = Table(
             'geometry_columns', mdata,
@@ -100,7 +100,7 @@ def setup_db(database, table, home, create_sfsql_tables=True, create_plpythonu_f
             Column('geometry_format', Text, nullable=False),
         )
         geom.create()
-    
+
         i = geom.insert()
         i.execute(f_table_catalog='public', f_table_schema='public',
                   f_table_name=table, f_geometry_column='wkt_geometry',
@@ -130,8 +130,8 @@ def setup_db(database, table, home, create_sfsql_tables=True, create_plpythonu_f
         Column('type', Text, index=True),
         Column('title', Text, index=True),
         Column('title_alternate', Text, index=True),
-        Column('abstract', Text, index=True),
-        Column('keywords', Text, index=True),
+        Column('abstract', Text),
+        Column('keywords', Text),
         Column('keywordstype', Text, index=True),
         Column('parentidentifier', Text, index=True),
         Column('relation', Text, index=True),
@@ -191,6 +191,10 @@ def setup_db(database, table, home, create_sfsql_tables=True, create_plpythonu_f
         # distribution
         # links: format "name,description,protocol,url[^,,,[^,,,]]"
         Column('links', Text, index=True),
+
+        #add custom indexes(NOAA):
++       Index('ix_records_abstract', 'abstract', postgresql_using='hash'),
++       Index('ix_records_keywords', 'keywords', postgresql_using='hash'),
     )
 
     # add extra columns that may have been passed via extra_columns
@@ -258,7 +262,7 @@ def setup_db(database, table, home, create_sfsql_tables=True, create_plpythonu_f
             from pycsw import util
             return util.get_spatial_overlay_rank(target_geom, query_geom)
             $$ LANGUAGE plpythonu;
-        ''' % pycsw_home 
+        ''' % pycsw_home
             conn.execute(function_get_anytext)
             conn.execute(function_query_spatial)
             conn.execute(function_update_xpath)
@@ -569,6 +573,6 @@ def delete_records(context, database, table):
     """Deletes all records from repository"""
 
     LOGGER.info('Deleting all records')
-    
+
     repo = repository.Repository(database, context, table=table)
     repo.delete(constraint={'where': '', 'values': []})
